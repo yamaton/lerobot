@@ -44,10 +44,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 # --- Constants ---
-FPS = 30
-KP = 0.1
+FPS = 50
+KP = 0.5
 DEADZONE = 0.15
-SPEED_FACTOR = 1.5
+SPEED_FACTOR = 5.0
 MAX_MOTORS_TO_CONTROL = 9
 PROTOCOL_VERSION = 0.0
 BAUDRATE = 1_000_000
@@ -84,7 +84,22 @@ def p_control_loop(port_handler, packet_handler, joystick):
     group_sync_write = GroupSyncWrite(port_handler, packet_handler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION)
 
     # --- Initialize Target Positions ---
-    target_positions = {motor_id: 0.0 for motor_id in active_motor_ids}
+    try:
+        # Set initial targets to the robot's current positions to prevent initial movement
+        comm_result = group_sync_read.txRxPacket()
+        if comm_result != COMM_SUCCESS:
+            raise ConnectionError(packet_handler.getTxRxResult(comm_result))
+
+        target_positions = {}
+        for motor_id in active_motor_ids:
+            pos = group_sync_read.getData(motor_id, ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION)
+            target_positions[motor_id] = float(pos)
+        logger.info(f"Initial target positions set to: {target_positions}")
+
+    except Exception as e:
+        logger.error(f"Failed to read initial motor positions: {e}. Starting all at 0.")
+        target_positions = {motor_id: 0.0 for motor_id in active_motor_ids}
+
     print("\nStarting teleoperation loop. Press Back/Select button to exit.")
 
     while True:
