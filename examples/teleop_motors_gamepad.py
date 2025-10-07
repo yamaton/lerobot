@@ -92,7 +92,6 @@ def p_control_loop(port_handler, packet_handler, joystick):
         pygame.event.pump()
 
         # --- Read Gamepad and Update Targets ---
-        # (Same logic as previous version)
         inputs = {
             1: -joystick.get_axis(1), 2: joystick.get_axis(0),
             3: -joystick.get_axis(4), 4: joystick.get_axis(3),
@@ -101,13 +100,20 @@ def p_control_loop(port_handler, packet_handler, joystick):
             8: joystick.get_button(5) - joystick.get_button(4),
             9: joystick.get_button(1) - joystick.get_button(0),
         }
+        # DEBUG: Log raw inputs
+        print(f"\rGamepad Inputs: {[(k, f'{v:.2f}') for k, v in inputs.items()]}", end="")
+
         if joystick.get_button(6): break
         if joystick.get_button(7):
+            print("\nResetting targets to 0...")
             for mid in target_positions: target_positions[mid] = 0.0
 
         for motor_id, value in inputs.items():
             if motor_id in target_positions and abs(value) > DEADZONE:
-                target_positions[motor_id] += value * SPEED_FACTOR
+                delta = value * SPEED_FACTOR
+                target_positions[motor_id] += delta
+                # DEBUG: Log target position change
+                print(f"\nMotor {motor_id}: value={value:.2f}, delta={delta:.2f}, new_target={target_positions[motor_id]:.2f}")
 
         # --- P-Control Calculation ---
         try:
@@ -124,6 +130,9 @@ def p_control_loop(port_handler, packet_handler, joystick):
                 error = target_pos - current_pos
                 control_output = KP * error
                 goal_pos = int(current_pos + control_output)
+
+                # DEBUG: Log P-control values
+                print(f"\nMotor {motor_id}: current={current_pos}, target={target_pos:.2f}, error={error:.2f}, goal={goal_pos}")
 
                 # Prepare data for sync_write (split 16-bit int into two 8-bit bytes)
                 param_goal_position = [goal_pos & 0xFF, (goal_pos >> 8) & 0xFF]
