@@ -3,7 +3,8 @@
 A low-level script to control up to 9 individual FeeTech motors using a gamepad.
 
 This script bypasses the high-level Robot classes to send `Goal_Position` commands
-directly to motors by their ID. It uses a proportional controller for smooth movements.
+directly to motors by their ID using the `scservo_sdk`. It uses a proportional controller
+for smooth movements.
 
 GAMEPAD MAPPING (XBox Controller Style):
 - Motor 1: Left Stick Up/Down
@@ -22,12 +23,20 @@ GAMEPAD MAPPING (XBox Controller Style):
 
 import argparse
 import logging
+import sys
 import time
 import traceback
 
 import pygame
 
-from lerobot.motors.feetech import FeetechMotorsBus
+try:
+    from scservo_sdk import COMM_SUCCESS, GroupSyncRead, GroupSyncWrite, PacketHandler, PortHandler
+except ImportError:
+    print("Error: scservo_sdk not found.")
+    print("Please ensure the lerobot development environment is set up and sourced correctly.")
+    sys.exit(1)
+
+from lerobot.motors.feetech.tables import MODEL_CONTROL_TABLE
 from lerobot.utils.utils import init_logging
 
 # Setup logging
@@ -35,22 +44,31 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 # --- Constants ---
-FPS = 50  # Control frequency in Hz
-KP = 0.1  # Proportional gain for the P-controller
-DEADZONE = 0.15  # Deadzone for joystick axes
-SPEED_FACTOR = 1.5  # Multiplier for joystick sensitivity
+FPS = 30
+KP = 0.1
+DEADZONE = 0.15
+SPEED_FACTOR = 1.5
 MAX_MOTORS_TO_CONTROL = 9
+PROTOCOL_VERSION = 0.0
+BAUDRATE = 1_000_000
+
+# Get register addresses and lengths from a sample control table (they are common for this purpose)
+# We assume all motors are STS/SMS series, which is standard for lerobot SO-100/101.
+CONTROL_TABLE = MODEL_CONTROL_TABLE["sts_series"]
+ADDR_GOAL_POSITION, LEN_GOAL_POSITION = CONTROL_TABLE["Goal_Position"]
+ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION = CONTROL_TABLE["Present_Position"]
 
 
-def p_control_loop(bus, joystick):
+def p_control_loop(port_handler, packet_handler, joystick):
     """Main proportional control loop for motor teleoperation."""
     control_period = 1.0 / FPS
-    active_motor_ids = []
 
-    # Ping motors to see which ones are active
+    # --- Discover Active Motors ---
+    active_motor_ids = []
     print("Pinging motor IDs 1-9...")
     for motor_id in range(1, MAX_MOTORS_TO_CONTROL + 1):
-        if bus.ping(motor_id):
+        _, comm_result, _ = packet_handler.ping(port_handler, motor_id)
+        if comm_result == COMM_SUCCESS:
             active_motor_ids.append(motor_id)
             print(f"  - Motor ID {motor_id} is active.")
 
@@ -58,64 +76,66 @@ def p_control_loop(bus, joystick):
         print("No active motors found. Exiting.")
         return
 
-    # Initialize target positions with the motors' current states
-    try:
-        initial_positions = bus.sync_read("Present_Position", ids=active_motor_ids)
-        target_positions = {motor_id: pos for motor_id, pos in initial_positions.items()}
-        logger.info(f"Initial target positions: {target_positions}")
-    except Exception as e:
-        logger.error(f"Failed to read initial motor positions: {e}. Starting at 0.")
-        target_positions = {motor_id: 0.0 for motor_id in active_motor_ids}
+    # --- Initialize GroupSyncRead and GroupSyncWrite ---
+    group_sync_read = GroupSyncRead(port_handler, packet_handler, ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION)
+    for motor_id in active_motor_ids:
+        group_sync_read.addParam(motor_id)
 
+    group_sync_write = GroupSyncWrite(port_handler, packet_handler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION)
+
+    # --- Initialize Target Positions ---
+    target_positions = {motor_id: 0.0 for motor_id in active_motor_ids}
     print("\nStarting teleoperation loop. Press Back/Select button to exit.")
 
     while True:
         start_time = time.time()
         pygame.event.pump()
 
-        # --- Read Gamepad Inputs ---
+        # --- Read Gamepad and Update Targets ---
+        # (Same logic as previous version)
         inputs = {
-            1: -joystick.get_axis(1),  # Motor 1: Left Stick Y (inverted)
-            2: joystick.get_axis(0),  # Motor 2: Left Stick X
-            3: -joystick.get_axis(4),  # Motor 3: Right Stick Y (inverted)
-            4: joystick.get_axis(3),  # Motor 4: Right Stick X
-            5: (joystick.get_axis(5) + 1) / 2 - (joystick.get_axis(2) + 1) / 2,  # Motor 5: RT - LT
-            6: joystick.get_hat(0)[1],  # Motor 6: D-Pad Y
-            7: joystick.get_hat(0)[0],  # Motor 7: D-Pad X
-            8: joystick.get_button(5) - joystick.get_button(4),  # Motor 8: RB - LB
-            9: joystick.get_button(1) - joystick.get_button(0),  # Motor 9: B - A
+            1: -joystick.get_axis(1), 2: joystick.get_axis(0),
+            3: -joystick.get_axis(4), 4: joystick.get_axis(3),
+            5: (joystick.get_axis(5) + 1) / 2 - (joystick.get_axis(2) + 1) / 2,
+            6: joystick.get_hat(0)[1], 7: joystick.get_hat(0)[0],
+            8: joystick.get_button(5) - joystick.get_button(4),
+            9: joystick.get_button(1) - joystick.get_button(0),
         }
+        if joystick.get_button(6): break
+        if joystick.get_button(7):
+            for mid in target_positions: target_positions[mid] = 0.0
 
-        # Exit button
-        if joystick.get_button(6):  # Back/Select button
-            print("Exit button pressed. Shutting down.")
-            break
-
-        # Homing button
-        if joystick.get_button(7):  # Start button
-            print("Homing button pressed. Resetting all motor targets to 0.")
-            for motor_id in target_positions:
-                target_positions[motor_id] = 0.0
-
-        # --- Update Target Positions ---
         for motor_id, value in inputs.items():
             if motor_id in target_positions and abs(value) > DEADZONE:
                 target_positions[motor_id] += value * SPEED_FACTOR
 
         # --- P-Control Calculation ---
         try:
-            current_positions = bus.sync_read("Present_Position", ids=active_motor_ids)
-            goal_positions = {}
-            for motor_id, target_pos in target_positions.items():
-                current_pos = current_positions.get(motor_id, target_pos)
+            # 1. Read all motor positions at once
+            comm_result = group_sync_read.txRxPacket()
+            if comm_result != COMM_SUCCESS:
+                logger.warning(f"sync_read failed: {packet_handler.getTxRxResult(comm_result)}")
+                continue
+
+            # 2. Calculate goal positions and prepare sync_write packet
+            for motor_id in active_motor_ids:
+                current_pos = group_sync_read.getData(motor_id, ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION)
+                target_pos = target_positions[motor_id]
                 error = target_pos - current_pos
                 control_output = KP * error
-                goal_positions[motor_id] = current_pos + control_output
+                goal_pos = int(current_pos + control_output)
 
-            bus.sync_write("Goal_Position", goal_positions)
+                # Prepare data for sync_write (split 16-bit int into two 8-bit bytes)
+                param_goal_position = [goal_pos & 0xFF, (goal_pos >> 8) & 0xFF]
+                group_sync_write.addParam(motor_id, param_goal_position)
 
-        except ConnectionError as e:
-            logger.warning(f"Communication error: {e}. Skipping cycle.")
+            # 3. Send all goal positions at once
+            comm_result = group_sync_write.txPacket()
+            if comm_result != COMM_SUCCESS:
+                logger.warning(f"sync_write failed: {packet_handler.getTxRxResult(comm_result)}")
+
+            group_sync_write.clearParam()
+
         except Exception as e:
             logger.error(f"An unexpected error occurred: {e}")
             traceback.print_exc()
@@ -123,40 +143,36 @@ def p_control_loop(bus, joystick):
 
         # Maintain control frequency
         elapsed_time = time.time() - start_time
-        sleep_time = control_period - elapsed_time
-        if sleep_time > 0:
+        if (sleep_time := control_period - elapsed_time) > 0:
             time.sleep(sleep_time)
-
 
 def main():
     """Main function to set up and run the motor teleoperation."""
     init_logging()
     parser = argparse.ArgumentParser(description="Control individual FeeTech motors with a gamepad.")
-    parser.add_argument("--port", type=str, required=True, help="Serial port for the motor bus.")
+    parser.add_argument("--port", type=str, default="/dev/ttyACM0", help="Serial port for the motor bus.")
     args = parser.parse_args()
 
-    # --- Pygame and Joystick Initialization ---
     pygame.init()
     pygame.joystick.init()
     if pygame.joystick.get_count() == 0:
-        print("No gamepad detected! Please connect a gamepad.")
+        print("No gamepad detected!")
         return
     joystick = pygame.joystick.Joystick(0)
     joystick.init()
     print(f"Gamepad detected: {joystick.get_name()}")
 
-    # --- Motor Bus Initialization ---
-    # Instantiate the bus with an empty motors dict to enable low-level communication
-    bus = FeetechMotorsBus(port=args.port, motors={})
+    port_handler = PortHandler(args.port)
+    packet_handler = PacketHandler(PROTOCOL_VERSION)
+
+    if not port_handler.openPort() or not port_handler.setBaudRate(BAUDRATE):
+        print("Failed to open port or set baudrate.")
+        return
+
     try:
-        bus.connect()
-        p_control_loop(bus, joystick)
-    except Exception as e:
-        logger.error(f"Failed to initialize or run control loop: {e}")
-        traceback.print_exc()
+        p_control_loop(port_handler, packet_handler, joystick)
     finally:
-        if bus.is_connected:
-            bus.disconnect()
+        port_handler.closePort()
         pygame.quit()
         print("Program finished.")
 
