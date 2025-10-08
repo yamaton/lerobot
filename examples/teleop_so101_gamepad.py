@@ -47,7 +47,7 @@ ee_to_follower_joints = RobotProcessorPipeline[tuple[RobotAction, RobotObservati
             kinematics=follower_kinematics_solver,
             end_effector_step_sizes={"x": 0.01, "y": 0.01, "z": 0.01},
             motor_names=list(follower.bus.motors.keys()),
-            use_latched_reference=True,
+            use_latched_reference=False,   # if False, uses the current pose as reference
         ),
         EEBoundsAndSafety(
             end_effector_bounds={"min": [-1.0, -1.0, -1.0], "max": [1.0, 1.0, 1.0]},
@@ -59,7 +59,7 @@ ee_to_follower_joints = RobotProcessorPipeline[tuple[RobotAction, RobotObservati
         InverseKinematicsEEToJoints(
             kinematics=follower_kinematics_solver,
             motor_names=list(follower.bus.motors.keys()),
-            initial_guess_current_joints=True,
+            initial_guess_current_joints=True,  # if False, uses the solution from the previous step
         ),
     ],
     to_transition=robot_action_observation_to_transition,
