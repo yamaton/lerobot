@@ -10,7 +10,7 @@ It pings a range of possible motor IDs and reports the ID and model name of any 
 Example usage:
 
 ```shell
-python examples/diagnostics/scan_motors.py --port /dev/ttyACM0
+python -m examples.diagnostics.scan_motors --port /dev/ttyACM0
 ```
 """
 
@@ -91,11 +91,8 @@ def scan_bus(port: str):
                     )
                     continue
 
-                # Get a sorted list of all register names from the control table
-                all_items = sorted(control_table.keys())
-
                 # Read and display all registers
-                for item_name in all_items:
+                for item_name in sorted(control_table.keys()):
                     address, length = control_table[item_name]
                     value, read_comm_result, read_error = (None, -1, -1)
 
