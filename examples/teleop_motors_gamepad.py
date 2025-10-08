@@ -62,8 +62,8 @@ MAX_MOTORS_TO_CONTROL = 9
 PROTOCOL_VERSION = 0.0
 BAUDRATE = 1_000_000
 
-# --- Motor Register Addresses (assuming sts_series) ---
-CONTROL_TABLE = MODEL_CONTROL_TABLE["sts_series"]
+# --- Motor Register Addresses (assuming sts3215) ---
+CONTROL_TABLE = MODEL_CONTROL_TABLE["sts3215"]
 ADDR_TORQUE_ENABLE, _ = CONTROL_TABLE["Torque_Enable"]
 ADDR_OPERATING_MODE, _ = CONTROL_TABLE["Operating_Mode"]
 ADDR_GOAL_POSITION, LEN_GOAL_POSITION = CONTROL_TABLE["Goal_Position"]
@@ -106,7 +106,7 @@ def p_control_loop(
     )
 
     # --- Initialize Target Positions ---
-    target_positions = {motor_id: 0.0 for motor_id in position_motors}
+    target_positions = dict.fromkeys(position_motors, 0.0)
     if position_motors:
         try:
             comm_result = group_read_pos.txRxPacket()
@@ -273,12 +273,12 @@ def main():
         return
 
     try:
-        # --- Enable Torque on velocity motors ---
+        # --- Disable torque lock on velocity motors ---
         if velocity_motors:
-            print(f"Enabling torque for velocity motors: {velocity_motors}...")
+            print(f"Disable torque lock for velocity motors: {velocity_motors}...")
             for motor_id in velocity_motors:
                 packet_handler.write1ByteTxRx(
-                    port_handler, motor_id, ADDR_TORQUE_ENABLE, 1
+                    port_handler, motor_id, ADDR_TORQUE_ENABLE, 0
                 )
 
         # --- Start Control Loop ---
@@ -287,17 +287,17 @@ def main():
         )
 
     finally:
-        # --- Disable Torque on all active motors for safety ---
+        # --- Enable torque lock on all active motors for safety ---
         all_motors = position_motors + velocity_motors
         if all_motors:
-            print(f"\nDisabling torque for all motors: {all_motors}...")
+            print(f"\nEnable torque lock for all motors: {all_motors}...")
             for motor_id in all_motors:
                 try:
                     packet_handler.write1ByteTxRx(
-                        port_handler, motor_id, ADDR_TORQUE_ENABLE, 0
+                        port_handler, motor_id, ADDR_TORQUE_ENABLE, 1
                     )
                 except Exception as e:
-                    print(f"Could not disable torque for motor {motor_id}: {e}")
+                    print(f"Could not enable torque lock for motor {motor_id}: {e}")
 
         port_handler.closePort()
         pygame.quit()
