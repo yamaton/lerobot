@@ -137,11 +137,11 @@ def p_control_loop(
             3: -joystick.get_axis(AXIS_RIGHT_STICK_Y),
             4: joystick.get_axis(AXIS_RIGHT_STICK_X),
             5: right_trigger - left_trigger,
-            6: joystick.get_hat(0)[1],
-            7: joystick.get_hat(0)[0],
-            8: joystick.get_button(BUTTON_RIGHT_BUMPER)
+            6: joystick.get_button(BUTTON_RIGHT_BUMPER)
             - joystick.get_button(BUTTON_LEFT_BUMPER),
-            9: joystick.get_button(BUTTON_B) - joystick.get_button(BUTTON_A),
+            7: joystick.get_hat(0)[1],
+            8: joystick.get_button(BUTTON_B) - joystick.get_button(BUTTON_A),
+            9: joystick.get_hat(0)[0],
         }
 
         if joystick.get_button(BUTTON_BACK):
