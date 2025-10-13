@@ -1,254 +1,257 @@
-# webrtc_qsv_server_fixed.py
+#!/usr/bin/env python3
+"""
+gst_webrtc_server.py
+Simple GStreamer-based WebRTC broadcaster using webrtcbin.
+
+- Captures from /dev/video{device}
+- Encodes with qsvh264enc (if available) or x264enc fallback
+- Payloads with rtph264pay and sends into webrtcbin
+- Signaling endpoint: POST /offer expecting JSON {"sdp": "...", "type":"offer"}
+  Responds with JSON {"sdp": "...", "type":"answer"}
+"""
+
 import argparse
 import asyncio
 import logging
-import weakref
-
+import threading
+import json
 from aiohttp import web
-import aiohttp_cors
-from aiortc import RTCPeerConnection, RTCSessionDescription
-from aiortc.contrib.media import MediaPlayer
 
-pcs = weakref.WeakSet()
+# GObject / GStreamer imports (must be after standard libs)
+import gi
+
+gi.require_version("Gst", "1.0")
+gi.require_version("GstWebRTC", "1.0")
+gi.require_version("GstSdp", "1.0")
+
+from gi.repository import Gst, GLib, GstWebRTC, GstSdp
+
+# Initialize GStreamer
+Gst.init(None)
+
+log = logging.getLogger("gst-webrtc")
+logging.basicConfig(level=logging.INFO)
+
+# Globals (protected by GLib mainloop calls)
+GST_LOOP = None
+PIPELINE = None
+WEBRTC = None  # the webrtcbin element
 
 
-async def start_ffmpeg_stream(device, out_port, hw_encoder):
+async def index(request):
+    return web.Response(text="GStreamer webrtcbin server is running.\n")
+
+
+def build_pipeline(device: int, width: int, height: int, framerate: int, use_qsv: bool):
     """
-    Start ffmpeg to capture the camera and stream an H.264 MPEG-TS stream
-    to udp://127.0.0.1:out_port
+    Build the GStreamer pipeline string. We name the payloader 'pay0' and the webrtc element 'webrtcbin'.
     """
-    # device can be an int (v4l2 index) or a path
-    if isinstance(device, int):
-        device_path = f"/dev/video{device}"
+    # choose encoder element
+    if use_qsv:
+        enc = "qsvh264enc bitrate=2000"  # qsvh264enc commonly exposes 'bitrate' in kbps
     else:
-        device_path = str(device)
+        # software fallback
+        enc = "x264enc bitrate=2000 speed-preset=ultrafast tune=zerolatency"
 
-    # choose encoder and options
-    if hw_encoder == "qsv":
-        encoder = "h264_qsv"
-        # For qsv we want nv12 input; do not request hwaccel for capture->encode
-        pre_encode_opts = ["-vf", "format=nv12", "-pix_fmt", "nv12"]
-    else:
-        encoder = "libx264"
-        pre_encode_opts = []
-
-    # build command
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "warning",
-        "-f",
-        "v4l2",
-        "-framerate",
-        "30",
-        "-video_size",
-        "1280x720",
-        "-i",
-        device_path,
-    ]
-
-    # apply pre-encoder options (format/pix_fmt)
-    cmd += pre_encode_opts
-
-    # encoder options tuned for low-latency streaming
-    cmd += [
-        "-c:v",
-        encoder,
-        "-preset",
-        "veryfast",
-        "-tune",
-        "zerolatency",
-        "-g",
-        "60",
-        "-b:v",
-        "2M",
-        "-maxrate",
-        "2M",
-        "-bufsize",
-        "4M",
-        "-f",
-        "mpegts",
-        f"udp://127.0.0.1:{out_port}",
-    ]
-
-    logging.info("Launching ffmpeg: %s", " ".join(cmd))
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    # pipeline description; note config-interval=1 so SPS/PPS are sent in-band
+    pipeline_desc = (
+        f"v4l2src device=/dev/video{device} ! "
+        f"videoscale ! videoconvert ! "
+        f"video/x-raw,format=I420,width={width},height={height},framerate={framerate}/1 ! "
+        f"queue ! {enc} ! h264parse ! rtph264pay config-interval=1 name=pay0 pt=96 "
+        f"! application/x-rtp,media=video,encoding-name=H264,payload=96 ! "
+        f"webrtcbin name=webrtcbin stun-server=stun://stun.l.google.com:19302"
     )
+    log.info("Pipeline: %s", pipeline_desc)
+    return Gst.parse_launch(pipeline_desc)
 
-    # background drain of stderr for debugging
-    async def _drain_stderr():
+
+def gst_main_start(device, width, height, framerate, use_qsv):
+    """
+    Create pipeline and run GLib main loop in this thread.
+    """
+    global GST_LOOP, PIPELINE, WEBRTC
+
+    log.info("Starting GLib main loop and creating pipeline...")
+    GST_LOOP = GLib.MainLoop()
+
+    # Build pipeline
+    PIPELINE = build_pipeline(device, width, height, framerate, use_qsv)
+
+    # get webrtcbin element
+    WEBRTC = PIPELINE.get_by_name("webrtcbin")
+    if WEBRTC is None:
+        raise RuntimeError("webrtcbin element not found in pipeline!")
+
+    # you can connect signals here for logging ICE candidates if you wish
+    def on_ice_candidate(_webrtc, mlineindex, candidate):
+        log.debug(
+            "webrtc on-ice-candidate mline=%s candidate=%s", mlineindex, candidate
+        )
+        # in this server implementation we don't forward candidates to the client
+        # (ICE trickle isn't required for simple LAN tests). If needed, expose an endpoint.
+
+    WEBRTC.connect("on-ice-candidate", on_ice_candidate)
+
+    # start pipeline
+    ret = PIPELINE.set_state(Gst.State.PLAYING)
+    if ret == Gst.StateChangeReturn.FAILURE:
+        raise RuntimeError("Failed to start pipeline")
+
+    log.info("Pipeline started, entering GLib MainLoop")
+    try:
+        GST_LOOP.run()
+    finally:
+        PIPELINE.set_state(Gst.State.NULL)
+        log.info("GLib MainLoop exited, pipeline stopped")
+
+
+def ensure_sdp_message(sdp_text: str):
+    """
+    Parse SDP text into GstSdp.SDPMessage.
+    Try a couple of available helpers for compatibility.
+    """
+    # Try the convenient constructor if available
+    try:
+        res, sdpmsg = GstSdp.SDPMessage.new_from_text(sdp_text)
+        if res != GstSdp.SDPResult.OK:
+            raise RuntimeError("SDP parse returned non-OK")
+        return sdpmsg
+    except Exception:
+        # fallback to parse_buffer (older bindings)
+        res, sdpmsg = GstSdp.SDPMessage.new()
+        # parse_buffer expects bytes
+        GstSdp.SDPMessage.parse_buffer(sdpmsg, bytes(sdp_text.encode()))
+        return sdpmsg
+
+
+def handle_offer_in_gst(offer_sdp: str, loop, fut: asyncio.Future):
+    """
+    This function runs in the GLib thread (scheduled via GLib.idle_add).
+    It:
+      - builds a GstWebRTC.WebRTCSessionDescription from the incoming offer SDP
+      - calls set-remote-description on webrtcbin
+      - creates an answer (webrtcbin emits create-answer)
+      - sets local description and returns the answer SDP (via the asyncio Future)
+    """
+    global WEBRTC
+
+    log.info("GStreamer: handling remote offer (in GLib thread)")
+
+    try:
+        # Parse SDP to GstSdp.SDPMessage
+        sdpmsg = ensure_sdp_message(offer_sdp)
+
+        # Build WebRTCSessionDescription
+        offer = GstWebRTC.WebRTCSessionDescription.new(
+            GstWebRTC.WebRTCSDPType.OFFER, sdpmsg
+        )
+
+        # Set remote description (block until complete)
+        promise = Gst.Promise.new()
+        WEBRTC.emit("set-remote-description", offer, promise)
+        promise.interrupt()  # ensure it doesn't block forever in odd cases
+
+        # Create answer (block until the answer is ready)
+        promise = Gst.Promise.new()
+        WEBRTC.emit("create-answer", None, promise)
+        reply = promise.get_reply()
+        answer = reply.get_value("answer")
+
+        # Set the local description with the generated answer so ICE/dtls states are correct
+        WEBRTC.emit("set-local-description", answer, Gst.Promise.new())
+
+        # Convert answer.sdp (GstSdp.SDPMessage) back to text.
+        # Try the high-level as_text() if available, else fall back to serializing manually.
+        sdp_text = None
         try:
-            while True:
-                line = await proc.stderr.readline()
-                if not line:
-                    break
-                logging.debug("ffmpeg: %s", line.decode(errors="ignore").rstrip())
+            sdp_text = answer.sdp.as_text()
         except Exception:
-            pass
+            try:
+                # helper function if available in this binding
+                sdp_text = GstSdp.sdp_message_as_text(answer.sdp)
+            except Exception:
+                # Last resort: use manual conversion (shouldn't normally be needed)
+                sdp_text = str(answer.sdp)
 
-    asyncio.create_task(_drain_stderr())
-    logging.info(
-        "Started ffmpeg (pid=%s) -> udp://127.0.0.1:%s (%s)",
-        proc.pid,
-        out_port,
-        encoder,
+        # Deliver answer back to asyncio future thread-safely
+        loop.call_soon_threadsafe(fut.set_result, {"sdp": sdp_text, "type": "answer"})
+        log.info("GStreamer: answer created and returned to HTTP handler")
+    except Exception as exc:
+        log.exception("Exception while handling offer in GStreamer: %s", exc)
+        loop.call_soon_threadsafe(fut.set_exception, exc)
+
+    # Return False to stop the idle handler from repeating
+    return False
+
+
+async def offer_handler(request):
+    """
+    HTTP handler: receives client's offer SDP and returns the answer SDP produced by GStreamer.
+    """
+    data = await request.json()
+    if "sdp" not in data:
+        return web.Response(status=400, text="Missing sdp")
+
+    offer_sdp = data["sdp"]
+    loop = asyncio.get_event_loop()
+    fut = loop.create_future()
+
+    # Schedule the SDP handling on the GLib main loop thread using idle_add
+    GLib.idle_add(handle_offer_in_gst, offer_sdp, loop, fut)
+
+    # Wait for the answer result (set by the GLib thread)
+    try:
+        answer = await asyncio.wait_for(fut, timeout=10.0)
+        return web.json_response(answer)
+    except asyncio.TimeoutError:
+        return web.Response(status=504, text="Timed out creating answer")
+    except Exception as exc:
+        return web.Response(status=500, text=f"Error creating answer: {exc}")
+
+
+def start_gst_thread(device, width, height, framerate, use_qsv):
+    t = threading.Thread(
+        target=gst_main_start,
+        args=(device, width, height, framerate, use_qsv),
+        daemon=True,
     )
-    return proc
+    t.start()
+    return t
 
 
-async def offer(request):
-    params = await request.json()
-    offer_desc = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
-
-    player = request.app.get("video_player")
-    if player is None:
-        return web.Response(status=500, text="Video source not ready")
-
-    pc = RTCPeerConnection()
-    pcs.add(pc)
-
-    @pc.on("connectionstatechange")
-    async def on_connectionstatechange():
-        logging.info("Connection state is %s", pc.connectionState)
-        if pc.connectionState in ("failed", "closed"):
-            await pc.close()
-            pcs.discard(pc)
-            logging.info("Peer connection closed and removed.")
-
-    if player.video:
-        pc.addTrack(player.video)
-    else:
-        logging.warning("MediaPlayer has no video track")
-
-    await pc.setRemoteDescription(offer_desc)
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-
-    return web.json_response(
-        {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
-    )
-
-
-async def on_startup(app):
-    args = app["args"]
-    udp_port = args.udp_port
-    hw_encoder = "qsv" if args.hw == "qsv" else "none"
-
-    # start ffmpeg
-    app["ffmpeg_proc"] = await start_ffmpeg_stream(
-        device=args.device, out_port=udp_port, hw_encoder=hw_encoder
-    )
-
-    # wait and retry opening MediaPlayer (to avoid race / I/O errors)
-    url = f"udp://127.0.0.1:{udp_port}"
-    logging.info("Will attempt to open MediaPlayer on %s (decode=False)", url)
-
-    max_tries = 10
-    delay = 0.3
-    last_exc = None
-    from av import error as av_error
-
-    for attempt in range(1, max_tries + 1):
-        # check if ffmpeg died
-        proc = app.get("ffmpeg_proc")
-        if proc and proc.returncode is not None:
-            # ffmpeg already exited
-            raise RuntimeError(
-                f"ffmpeg terminated early with returncode={proc.returncode}"
-            )
-
-        try:
-            # decode=False -> treat the incoming stream as already-encoded (passthrough)
-            player = MediaPlayer(url, format="mpegts", options={"timeout": "3000000"})
-            app["video_player"] = player
-            logging.info("MediaPlayer opened successfully on attempt %d", attempt)
-            return
-        except (OSError, av_error.OSError) as exc:
-            last_exc = exc
-            logging.warning(
-                "Failed to open MediaPlayer on attempt %d/%d: %s",
-                attempt,
-                max_tries,
-                exc,
-            )
-            await asyncio.sleep(delay)
-
-    # all attempts failed
-    raise RuntimeError(
-        f"Failed to open MediaPlayer after {max_tries} tries: last error: {last_exc}"
-    )
-
-
-async def on_shutdown(app):
-    coros = [pc.close() for pc in pcs]
-    await asyncio.gather(*coros, return_exceptions=True)
-
-    player = app.get("video_player")
-    if player:
-        try:
-            await player.stop()
-        except Exception:
-            pass
-
-    proc = app.get("ffmpeg_proc")
-    if proc and proc.returncode is None:
-        logging.info("Terminating ffmpeg (pid=%s)", proc.pid)
-        proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=2.0)
-        except asyncio.TimeoutError:
-            logging.info("Killing ffmpeg (pid=%s)", proc.pid)
-            proc.kill()
-            await proc.wait()
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="WebRTC camera streamer (fixed)")
+def main():
+    parser = argparse.ArgumentParser(description="GStreamer webrtcbin camera server")
     parser.add_argument(
         "--device",
         type=int,
         default=0,
-        help="v4l2 device index (e.g. 0 for /dev/video0)",
+        help="v4l2 device index (default 0 -> /dev/video0)",
     )
-    parser.add_argument("--port", type=int, default=8080, help="HTTP server port")
-    parser.add_argument(
-        "--udp-port",
-        type=int,
-        default=5000,
-        help="Local UDP port where ffmpeg streams MPEG-TS",
-    )
+    parser.add_argument("--width", type=int, default=1280)
+    parser.add_argument("--height", type=int, default=720)
+    parser.add_argument("--framerate", type=int, default=30)
+    parser.add_argument("--port", type=int, default=8080)
     parser.add_argument(
         "--hw",
         choices=("qsv", "none"),
         default="qsv",
-        help="Use h264_qsv hardware encoder or libx264",
+        help="Use qsv encoder or software x264",
     )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO)
+    use_qsv = args.hw == "qsv"
+
+    # Start GStreamer pipeline and GLib main loop in background thread
+    start_gst_thread(args.device, args.width, args.height, args.framerate, use_qsv)
+
+    # Start aiohttp server for signaling
     app = web.Application()
-    app["args"] = args
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-    app.router.add_post("/offer", offer)
+    app.add_routes([web.get("/", index), web.post("/offer", offer_handler)])
 
-    cors = aiohttp_cors.setup(
-        app,
-        defaults={
-            "*": aiohttp_cors.ResourceOptions(
-                allow_credentials=True,
-                expose_headers="*",
-                allow_headers="*",
-                allow_methods=["POST", "OPTIONS"],
-            )
-        },
-    )
-    for route in list(app.router.routes()):
-        cors.add(route)
+    log.info("Starting HTTP server on 0.0.0.0:%s", args.port)
+    web.run_app(app, host="0.0.0.0", port=args.port)
 
-    web.run_app(app, port=args.port, host="0.0.0.0")
+
+if __name__ == "__main__":
+    main()
