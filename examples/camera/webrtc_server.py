@@ -1,86 +1,129 @@
+# webrtc_qsv_server_fixed.py
 import argparse
 import asyncio
 import logging
 import weakref
 
-import cv2
-import aiohttp_cors
-from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
-from av import VideoFrame
 from aiohttp import web
-
-
-class CameraStreamTrack(VideoStreamTrack):
-    """
-    A video track that captures frames from a camera device.
-    """
-
-    def __init__(self, device):
-        super().__init__()
-        # The VideoCapture object will be created later, in an async context
-        self.device = device
-        self.cap = None
-        self.last_frame = None
-        self._task = None
-
-    async def start_capture(self):
-        """Asynchronously start the camera capture."""
-        self.cap = cv2.VideoCapture(self.device)
-        if not self.cap.isOpened():
-            raise RuntimeError(f"Could not open video source: {self.device}")
-        self._task = asyncio.create_task(self._read_frames())
-        print("Camera capture started.")
-
-    async def _read_frames(self):
-        while self.cap and self.cap.isOpened():
-            ret, frame = self.cap.read()
-            if not ret:
-                break
-            self.last_frame = frame
-            await asyncio.sleep(1 / 30)  # ~30fps
-        print("Camera capture task finished.")
-
-    async def recv(self):
-        pts, time_base = await self.next_timestamp()
-
-        while self.last_frame is None:
-            await asyncio.sleep(0.01)
-
-        vframe = VideoFrame.from_ndarray(self.last_frame, format="bgr24")
-        vframe.pts = pts
-        vframe.time_base = time_base
-        return vframe
-
-    def stop(self):
-        if self._task:
-            self._task.cancel()
-        if self.cap and self.cap.isOpened():
-            self.cap.release()
-        print("Camera track stopped and released.")
-
+import aiohttp_cors
+from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc.contrib.media import MediaPlayer
 
 pcs = weakref.WeakSet()
+
+
+async def start_ffmpeg_stream(device, out_port, hw_encoder):
+    """
+    Start ffmpeg to capture the camera and stream an H.264 MPEG-TS stream
+    to udp://127.0.0.1:out_port
+    """
+    # device can be an int (v4l2 index) or a path
+    if isinstance(device, int):
+        device_path = f"/dev/video{device}"
+    else:
+        device_path = str(device)
+
+    # choose encoder and options
+    if hw_encoder == "qsv":
+        encoder = "h264_qsv"
+        # For qsv we want nv12 input; do not request hwaccel for capture->encode
+        pre_encode_opts = ["-vf", "format=nv12", "-pix_fmt", "nv12"]
+    else:
+        encoder = "libx264"
+        pre_encode_opts = []
+
+    # build command
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-f",
+        "v4l2",
+        "-framerate",
+        "30",
+        "-video_size",
+        "1280x720",
+        "-i",
+        device_path,
+    ]
+
+    # apply pre-encoder options (format/pix_fmt)
+    cmd += pre_encode_opts
+
+    # encoder options tuned for low-latency streaming
+    cmd += [
+        "-c:v",
+        encoder,
+        "-preset",
+        "veryfast",
+        "-tune",
+        "zerolatency",
+        "-g",
+        "60",
+        "-b:v",
+        "2M",
+        "-maxrate",
+        "2M",
+        "-bufsize",
+        "4M",
+        "-f",
+        "mpegts",
+        f"udp://127.0.0.1:{out_port}",
+    ]
+
+    logging.info("Launching ffmpeg: %s", " ".join(cmd))
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    # background drain of stderr for debugging
+    async def _drain_stderr():
+        try:
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    break
+                logging.debug("ffmpeg: %s", line.decode(errors="ignore").rstrip())
+        except Exception:
+            pass
+
+    asyncio.create_task(_drain_stderr())
+    logging.info(
+        "Started ffmpeg (pid=%s) -> udp://127.0.0.1:%s (%s)",
+        proc.pid,
+        out_port,
+        encoder,
+    )
+    return proc
 
 
 async def offer(request):
     params = await request.json()
     offer_desc = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
-    # Get the video track from the app context
-    video_track = request.app["video_track"]
+    player = request.app.get("video_player")
+    if player is None:
+        return web.Response(status=500, text="Video source not ready")
 
     pc = RTCPeerConnection()
     pcs.add(pc)
 
     @pc.on("connectionstatechange")
     async def on_connectionstatechange():
-        print(f"Connection state is {pc.connectionState}")
-        if pc.connectionState == "failed" or pc.connectionState == "closed":
+        logging.info("Connection state is %s", pc.connectionState)
+        if pc.connectionState in ("failed", "closed"):
             await pc.close()
             pcs.discard(pc)
-            print("Peer connection closed and removed.")
+            logging.info("Peer connection closed and removed.")
 
-    pc.addTrack(video_track)
+    if player.video:
+        pc.addTrack(player.video)
+    else:
+        logging.warning("MediaPlayer has no video track")
 
     await pc.setRemoteDescription(offer_desc)
     answer = await pc.createAnswer()
@@ -92,36 +135,104 @@ async def offer(request):
 
 
 async def on_startup(app):
-    """Create and start the camera track when the app starts."""
-    device = app["args"].device
-    video_track = CameraStreamTrack(device=device)
-    await video_track.start_capture()
-    app["video_track"] = video_track
+    args = app["args"]
+    udp_port = args.udp_port
+    hw_encoder = "qsv" if args.hw == "qsv" else "none"
+
+    # start ffmpeg
+    app["ffmpeg_proc"] = await start_ffmpeg_stream(
+        device=args.device, out_port=udp_port, hw_encoder=hw_encoder
+    )
+
+    # wait and retry opening MediaPlayer (to avoid race / I/O errors)
+    url = f"udp://127.0.0.1:{udp_port}"
+    logging.info("Will attempt to open MediaPlayer on %s (decode=False)", url)
+
+    max_tries = 10
+    delay = 0.3
+    last_exc = None
+    from av import error as av_error
+
+    for attempt in range(1, max_tries + 1):
+        # check if ffmpeg died
+        proc = app.get("ffmpeg_proc")
+        if proc and proc.returncode is not None:
+            # ffmpeg already exited
+            raise RuntimeError(
+                f"ffmpeg terminated early with returncode={proc.returncode}"
+            )
+
+        try:
+            # decode=False -> treat the incoming stream as already-encoded (passthrough)
+            player = MediaPlayer(url, format="mpegts", options={"timeout": "3000000"})
+            app["video_player"] = player
+            logging.info("MediaPlayer opened successfully on attempt %d", attempt)
+            return
+        except (OSError, av_error.OSError) as exc:
+            last_exc = exc
+            logging.warning(
+                "Failed to open MediaPlayer on attempt %d/%d: %s",
+                attempt,
+                max_tries,
+                exc,
+            )
+            await asyncio.sleep(delay)
+
+    # all attempts failed
+    raise RuntimeError(
+        f"Failed to open MediaPlayer after {max_tries} tries: last error: {last_exc}"
+    )
 
 
 async def on_shutdown(app):
-    """Stop the camera track and close peer connections on shutdown."""
     coros = [pc.close() for pc in pcs]
-    await asyncio.gather(*coros)
+    await asyncio.gather(*coros, return_exceptions=True)
 
-    if "video_track" in app:
-        app["video_track"].stop()
+    player = app.get("video_player")
+    if player:
+        try:
+            await player.stop()
+        except Exception:
+            pass
+
+    proc = app.get("ffmpeg_proc")
+    if proc and proc.returncode is None:
+        logging.info("Terminating ffmpeg (pid=%s)", proc.pid)
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            logging.info("Killing ffmpeg (pid=%s)", proc.pid)
+            proc.kill()
+            await proc.wait()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="WebRTC camera streamer")
+    parser = argparse.ArgumentParser(description="WebRTC camera streamer (fixed)")
     parser.add_argument(
-        "--device", type=int, default=0, help="Device index for the camera"
+        "--device",
+        type=int,
+        default=0,
+        help="v4l2 device index (e.g. 0 for /dev/video0)",
+    )
+    parser.add_argument("--port", type=int, default=8080, help="HTTP server port")
+    parser.add_argument(
+        "--udp-port",
+        type=int,
+        default=5000,
+        help="Local UDP port where ffmpeg streams MPEG-TS",
     )
     parser.add_argument(
-        "--port", type=int, default=8080, help="Port to run the server on"
+        "--hw",
+        choices=("qsv", "none"),
+        default="qsv",
+        help="Use h264_qsv hardware encoder or libx264",
     )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
-
     app = web.Application()
-    app["args"] = args  # Store args in the app context
+    app["args"] = args
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
     app.router.add_post("/offer", offer)
