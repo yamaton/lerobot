@@ -385,6 +385,8 @@ def main():
                 busy_wait(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
 
                 obs = robot.get_observation()
+                load_val = robot.bus.read("Present_Load", "gripper")
+                print(f"Raw load reading: {load_val}")
 
             except ConnectionError as e:
                 logger.warning(
