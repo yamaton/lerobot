@@ -1,3 +1,18 @@
+"""
+Sending robot-teleoperation signal over WebSocket
+
+How to run:
+
+1. Run the receiver (host) script
+
+    python -m examples.lekiwi.teleop_receiver
+
+2. Run the sender (client) script
+
+    python -m examples.lekiwi.teleop_sender --host <host-ip-address>
+
+"""
+
 import asyncio
 import json
 import time

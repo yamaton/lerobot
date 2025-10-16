@@ -1,3 +1,18 @@
+"""
+Receiving robot-teleoperation signal over WebSocket
+
+How to run:
+
+1. Run the receiver (host) script
+
+    python -m examples.lekiwi.teleop_receiver
+
+2. Run the sender (client) script
+
+    python -m examples.lekiwi.teleop_sender --host <host-ip-address>
+
+"""
+
 import asyncio
 import json
 import logging
@@ -168,8 +183,8 @@ async def main():
     )
 
     robot.connect()
-    server = await websockets.serve(websocket_handler, "127.0.0.1", 8765)
-    print("Websocket server listening at ws://127.0.0.1:8765")
+    server = await websockets.serve(websocket_handler, "0.0.0.0", 8765)
+    print("Websocket server listening at port 8765")
 
     # start control loop
     loop = asyncio.get_running_loop()
