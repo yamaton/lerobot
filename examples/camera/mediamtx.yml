@@ -1,0 +1,31 @@
+# ---------------------------------------------------------
+# MediaMTX configuration for streaming camera(s) with WebRTC
+#
+# NOTE: ffmpeg v8.0 or later is required
+#
+# How to use:
+#   1. Save this file in /usr/local/etc/
+#   2. Run `mediamtx`
+#   3. Open browser and enter `http://<target-ip-address>:8889/mystream`
+#
+# ---------------------------------------------------------
+
+# Basic settings
+logLevel: info
+logDestinations: [stdout]
+
+# WebRTC configuration
+webrtc: yes
+# webrtcAddress: :8889
+# webrtcICEServers2: [] # Empty for LAN, add STUN/TURN for internet
+
+# https://mediamtx.org/docs/usage/publish#generic-webcams
+paths:
+  mystream:
+    runOnInit: |-
+      ffmpeg -re -f v4l2 -i /dev/video0  \
+        -f lavfi -i "sine=frequency=1000:sample_rate=48000" \
+        -c:v libx264 -pix_fmt yuv420p -preset ultrafast -tune zerolatency -b:v 600k \
+        -c:a libopus -ar 48000 -ac 2 -b:a 128k \
+        -f whip http://localhost:8889/$MTX_PATH/whip
+    runOnInitRestart: yes
