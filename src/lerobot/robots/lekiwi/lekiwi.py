@@ -194,6 +194,14 @@ class LeKiwi(Robot):
             self.bus.write("I_Coefficient", name, 0)
             self.bus.write("D_Coefficient", name, 32)
 
+            # Protect gripper motor
+            if name == "arm_gripper":
+                self.bus.write(
+                    "Max_Torque_Limit", name, 500
+                )  # 50% of the max torque limit to avoid burnout
+                self.bus.write("Protection_Current", name, 250)  # 50% of max current to avoid burnout
+                self.bus.write("Overload_Torque", name, 25)  # 25% torque when overloaded
+
         for name in self.base_motors:
             self.bus.write("Operating_Mode", name, OperatingMode.VELOCITY.value)
 
