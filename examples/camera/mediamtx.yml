@@ -24,9 +24,9 @@ paths:
   mystream:
     runOnInit: |-
       ffmpeg -re -f v4l2 -i /dev/video0  \
-        -f lavfi -i "sine=frequency=1000:sample_rate=48000" \
+        -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
         -vf format=nv12 \
         -c:v h264_qsv -preset veryfast -look_ahead 0 -async_depth 1 -bf 0 -g 30 \
-        -c:a libopus -ar 48000 -ac 2 -b:a 128k \
+        -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
         -f whip http://localhost:8889/$MTX_PATH/whip
     runOnInitRestart: yes
