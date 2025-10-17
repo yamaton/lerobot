@@ -31,10 +31,10 @@ CURRENT_BASE_SPEED_LEVEL = 1.0
 # Keymaps (semantic action: controller mapping) - Intuitive human control
 KEYMAP = {
     # Left stick controls left arm XY (when not pressed)
-    "x+": "left_stick_up",
-    "x-": "left_stick_down",
-    "y+": "left_stick_right",
-    "y-": "left_stick_left",
+    "x+": "left_stick_right",
+    "x-": "left_stick_left",
+    "y+": "left_stick_up",
+    "y-": "left_stick_down",
     # Left stick pressed controls left arm shoulder_pan
     "shoulder_pan+": "right_stick_right",
     "shoulder_pan-": "right_stick_left",
