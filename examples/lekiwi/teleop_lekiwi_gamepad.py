@@ -153,6 +153,7 @@ def main():
                 right_stick_y = joystick.get_axis(4)
                 left_trigger = (joystick.get_axis(2) + 1) / 2
                 right_trigger = (joystick.get_axis(5) + 1) / 2
+
                 # Buttons
                 left_bumper = joystick.get_button(4)
                 right_bumper = joystick.get_button(5)
