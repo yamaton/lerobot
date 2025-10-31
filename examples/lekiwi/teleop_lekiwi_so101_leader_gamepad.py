@@ -121,7 +121,8 @@ def main():
                 right_bumper = joystick.get_button(5)
 
                 # --- Base Control ---
-                base_x_vel = left_stick_y
+                # should be `x_vel = stick_y` but this works...
+                base_x_vel = -left_stick_y
                 base_y_vel = -left_stick_x
                 base_theta_vel = 0.0
                 if left_bumper:
