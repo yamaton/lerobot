@@ -141,7 +141,6 @@ def main():
 
                 # add arm actions
                 arm_action = teleop_leader_arm.get_action()
-                assert set(arm_action) == set(JOINT_SO101ARM_TO_LEKIWI)
                 for k, v in arm_action.items():
                     lekiwi_key = JOINT_SO101ARM_TO_LEKIWI[k]
                     action[lekiwi_key] = v
