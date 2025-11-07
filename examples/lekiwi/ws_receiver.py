@@ -5,14 +5,15 @@ How to run:
 
 1. Run the receiver (host) script
 
-    python -m examples.lekiwi.ws_receiver
+    python -m examples.lekiwi.ws_receiver --serial /dev/ttyACM0 --robot-id my_robot --port 8765
 
 2. Run the sender (client) script
 
-    python -m examples.lekiwi.ws_sender_so101leader_keyboard --host <host-ip-address>
+    python -m examples.lekiwi.ws_sender_so101leader_keyboard --host <host-ip-address> --port 8765
 
 """
 
+import argparse
 import asyncio
 import json
 import logging
@@ -90,14 +91,18 @@ async def control_loop(robot):
             await asyncio.sleep(sleep_for)
 
 
-async def main():
+async def main(args):
     # init robot and pipeline
-    robot_config = LeKiwiConfig(port="/dev/ttyACM0", id="my_awesome_lekiwi", cameras={})
+    # Use arguments for serial port and robot_id
+    robot_config = LeKiwiConfig(port=args.serial, id=args.robot_id, cameras={}) # Modified
     robot = LeKiwi(robot_config)
 
     robot.connect()
-    server = await websockets.serve(websocket_handler, "0.0.0.0", 8765)
-    print("Websocket server listening at port 8765")
+    # Use argument for websocket port
+    server = await websockets.serve(websocket_handler, "0.0.0.0", args.port) # Modified
+    print(f"Websocket server listening at port {args.port}") # Modified
+
+    print(f"Controlling robot '{args.robot_id}' on serial port '{args.serial}'") # Modified
 
     # start control loop
     loop = asyncio.get_running_loop()
@@ -107,4 +112,25 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="LeKiwi WebSocket Teleoperation Receiver")
+    parser.add_argument(
+        "--serial", # Renamed from --port
+        type=str,
+        default="/dev/ttyACM0",
+        help="Serial port for the LeKiwi robot (e.g., /dev/ttyACM0)",
+    )
+    parser.add_argument(
+        "--robot-id",
+        type=str,
+        default="my_awesome_lekiwi",
+        help="Identifier for the robot",
+    )
+    parser.add_argument(
+        "--port", # Added for websocket
+        type=int,
+        default=8765,
+        help="WebSocket server port",
+    )
+    args = parser.parse_args()
+
+    asyncio.run(main(args))
