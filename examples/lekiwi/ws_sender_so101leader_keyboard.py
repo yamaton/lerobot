@@ -17,6 +17,8 @@ import asyncio
 import json
 import time
 import argparse
+import socket
+import statistics
 
 from lerobot.teleoperators.so101_leader import SO101Leader, SO101LeaderConfig
 from lerobot.teleoperators.keyboard import KeyboardTeleop, KeyboardTeleopConfig
@@ -24,6 +26,7 @@ import websockets
 
 FPS = 30
 DEADZONE = 0.15
+RECONNECT_DELAY = 1.0  # Delay in seconds before retrying connection
 
 JOINT_SO101ARM_TO_LEKIWI = {
     "shoulder_pan.pos": "arm_shoulder_pan.pos",
@@ -35,7 +38,9 @@ JOINT_SO101ARM_TO_LEKIWI = {
 }
 
 
-async def send_so101_leader_keyboard(uri: str, so101_leader_port: str, so101_leader_id: str):
+async def send_so101_leader_keyboard(
+    uri: str, so101_leader_port: str, so101_leader_id: str
+):
     # Initialize the leader arm
     teleop_config = SO101LeaderConfig(port=so101_leader_port, id=so101_leader_id)
     teleop_leader_arm = SO101Leader(teleop_config)
@@ -45,106 +50,123 @@ async def send_so101_leader_keyboard(uri: str, so101_leader_port: str, so101_lea
     teleop_keyboard = KeyboardTeleop(KeyboardTeleopConfig())
     teleop_keyboard.connect()
 
-    async with websockets.connect(uri) as ws:
-        # Disable Nagle on the client socket
+    seq = 0
+    rtts = []
+    action = {
+        "arm_shoulder_pan.pos": 0.0,
+        "arm_shoulder_lift.pos": 0.0,
+        "arm_elbow_flex.pos": 0.0,
+        "arm_wrist_flex.pos": 0.0,
+        "arm_wrist_roll.pos": 0.0,
+        "arm_gripper.pos": 0.0,
+        "x.vel": 0.0,
+        "y.vel": 0.0,
+        "theta.vel": 0.0,
+    }
+
+    # Main reconnection loop
+    while True:
         try:
-            sock = ws.transport.get_extra_info("socket")
-            if sock:
-                import socket
-
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        except Exception:
-            pass
-
-        seq = 0
-        rtts = []
-        action = {
-            "arm_shoulder_pan.pos": 0.0,
-            "arm_shoulder_lift.pos": 0.0,
-            "arm_elbow_flex.pos": 0.0,
-            "arm_wrist_flex.pos": 0.0,
-            "arm_wrist_roll.pos": 0.0,
-            "arm_gripper.pos": 0.0,
-            "x.vel": 0.0,
-            "y.vel": 0.0,
-            "theta.vel": 0.0,
-        }
-
-        while True:
-            # >>> ------------------------------
-            # Base Control via Keyboard
-            delta_x, delta_y, theta_vel = 0.0, 0.0, 0.0
-            for k, _ in teleop_keyboard.get_action().items():
-                if k == 'd':
-                    # right
-                    delta_x += 1.0
-                elif k == 'a':
-                    # left
-                    delta_x -= 1.0
-                elif k == 'w':
-                    # up
-                    delta_y += 1.0
-                elif k == 's':
-                    # down
-                    delta_y -= 1.0
-                elif k == 'e':
-                    # clockwise
-                    theta_vel -= 1.0
-                elif k == 'q':
-                    # counter-clockwise
-                    theta_vel += 1.0
-
-            x_vel = delta_y
-            y_vel = -delta_x
-            action["x.vel"] = x_vel * 0.2  # Scale for safety
-            action["y.vel"] = y_vel * 0.2  # Scale for safety
-            action["theta.vel"] = theta_vel * 30  # Scale for safety
-            # <<< ------------------------------
-
-
-            # >>> ------------------------------
-            # Arm Control via SO101 Leader Arm
-            arm_action = teleop_leader_arm.get_action()
-            for k, v in arm_action.items():
-                lekiwi_key = JOINT_SO101ARM_TO_LEKIWI[k]
-                action[lekiwi_key] = v
-            # <<< ------------------------------
-
-            t_send = time.perf_counter()
-            msg = {
-                "seq": seq,
-                "t_send": t_send,
-                **action,
-            }
-            await ws.send(json.dumps(msg))
-            seq += 1
-
-            # check for immediate pong messages without blocking the loop
-            try:
-                # use short timeout to poll for pong
-                pong = await asyncio.wait_for(ws.recv(), timeout=0.001)
+            print(f"Attempting to connect to {uri}...")
+            async with websockets.connect(uri) as ws:
+                print("Connection established.")
+                # Disable Nagle on the client socket
                 try:
-                    data = json.loads(pong)
-                    if "echo_seq" in data and data.get("t_send") is not None:
-                        rtt = time.perf_counter() - float(data["t_send"])
-                        rtts.append(rtt)
-                        if len(rtts) >= 100:
-                            import statistics
+                    sock = ws.transport.get_extra_info("socket")
+                    if sock:
+                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except Exception as e:
+                    print(f"Warning: Could not set TCP_NODELAY: {e}")
 
-                            print(
-                                "RTT stats (s): min/median/90th/max: ",
-                                min(rtts),
-                                statistics.median(rtts),
-                                sorted(rtts)[int(0.9 * len(rtts))],
-                                max(rtts),
-                            )
-                            rtts = []
-                except Exception:
-                    pass
-            except asyncio.TimeoutError:
-                pass
+                # Inner communication loop (this breaks on disconnect)
+                while True:
+                    # >>> ------------------------------
+                    # Base Control via Keyboard
+                    delta_x, delta_y, theta_vel = 0.0, 0.0, 0.0
+                    for k, _ in teleop_keyboard.get_action().items():
+                        if k == "d":
+                            # right
+                            delta_x += 1.0
+                        elif k == "a":
+                            # left
+                            delta_x -= 1.0
+                        elif k == "w":
+                            # up
+                            delta_y += 1.0
+                        elif k == "s":
+                            # down
+                            delta_y -= 1.0
+                        elif k == "e":
+                            # clockwise
+                            theta_vel -= 1.0
+                        elif k == "q":
+                            # counter-clockwise
+                            theta_vel += 1.0
 
-            await asyncio.sleep(1.0 / FPS)
+                    x_vel = delta_y
+                    y_vel = -delta_x
+                    action["x.vel"] = x_vel * 0.2  # Scale for safety
+                    action["y.vel"] = y_vel * 0.2  # Scale for safety
+                    action["theta.vel"] = theta_vel * 30  # Scale for safety
+                    # <<< ------------------------------
+
+                    # >>> ------------------------------
+                    # Arm Control via SO101 Leader Arm
+                    arm_action = teleop_leader_arm.get_action()
+                    for k, v in arm_action.items():
+                        lekiwi_key = JOINT_SO101ARM_TO_LEKIWI[k]
+                        action[lekiwi_key] = v
+                    # <<< ------------------------------
+
+                    t_send = time.perf_counter()
+                    msg = {
+                        "seq": seq,
+                        "t_send": t_send,
+                        **action,
+                    }
+                    await ws.send(json.dumps(msg))
+                    seq += 1
+
+                    # check for immediate pong messages without blocking the loop
+                    try:
+                        # use short timeout to poll for pong
+                        pong = await asyncio.wait_for(ws.recv(), timeout=0.001)
+                        try:
+                            data = json.loads(pong)
+                            if "echo_seq" in data and data.get("t_send") is not None:
+                                rtt = time.perf_counter() - float(data["t_send"])
+                                rtts.append(rtt)
+                                if len(rtts) >= 100:
+                                    print(
+                                        "RTT stats (s): min/median/90th/max: ",
+                                        min(rtts),
+                                        statistics.median(rtts),
+                                        sorted(rtts)[int(0.9 * len(rtts))],
+                                        max(rtts),
+                                    )
+                                    rtts = []
+                        except Exception:
+                            pass
+                    except asyncio.TimeoutError:
+                        pass
+
+                    await asyncio.sleep(1.0 / FPS)
+
+        # Catch connection errors, log, and wait before retrying
+        except (
+            websockets.exceptions.ConnectionClosed,
+            asyncio.TimeoutError,
+            OSError,
+        ) as e:
+            print(f"Connection lost: {e}. Reconnecting in {RECONNECT_DELAY}s...")
+            rtts = []  # Reset RTT stats on disconnect
+            await asyncio.sleep(RECONNECT_DELAY)
+        except Exception as e:
+            # Catch other unexpected errors to prevent script crash
+            print(
+                f"An unexpected error occurred: {e}. Retrying in {RECONNECT_DELAY}s..."
+            )
+            await asyncio.sleep(RECONNECT_DELAY)
 
 
 if __name__ == "__main__":
@@ -154,4 +176,10 @@ if __name__ == "__main__":
     parser.add_argument("--teleop_port", default="/dev/ttyACM0", type=str)
     parser.add_argument("--teleop_id", default="my_awesome_so101_leader_arm", type=str)
     args = parser.parse_args()
-    asyncio.run(send_so101_leader_keyboard(f"ws://{args.host}:{args.port}", args.teleop_port, args.teleop_id))
+    asyncio.run(
+        send_so101_leader_keyboard(
+            f"ws://{args.host}:{args.port}",
+            args.teleop_port,
+            args.teleop_id,
+        )
+    )
