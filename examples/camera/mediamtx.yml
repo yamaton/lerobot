@@ -6,7 +6,7 @@
 # How to use:
 #   1. Save this file in /usr/local/etc/
 #   2. Run `mediamtx`
-#   3. Open browser and enter `http://<target-ip-address>:8889/mystream`
+#   3. Open browser and enter `http://<target-ip-address>:8889/cam1`
 #
 # ---------------------------------------------------------
 
@@ -21,12 +21,35 @@ webrtc: yes
 
 # https://mediamtx.org/docs/usage/publish#generic-webcams
 paths:
-  mystream:
+  cam1:
     runOnInit: |-
-      ffmpeg -re -f v4l2 -i /dev/video0  \
+      ffmpeg -re -f v4l2 \
+        -video_size 1280x720 -framerate 30 -input_format mjpeg \
+        -i /dev/video2  \
         -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
         -vf format=nv12 \
         -c:v h264_qsv -preset veryfast -look_ahead 0 -async_depth 1 -bf 0 -g 30 \
         -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
-        -f whip http://localhost:8889/$MTX_PATH/whip
+        -f whip http://100.99.64.73:8889/$MTX_PATH/whip
     runOnInitRestart: yes
+  cam2:
+    runOnInit: |-
+      ffmpeg -re -f v4l2 \
+        -video_size 1280x720 -framerate 30 -input_format mjpeg \
+        -i /dev/video4  \
+        -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
+        -vf format=nv12 \
+        -c:v h264_qsv -preset veryfast -look_ahead 0 -async_depth 1 -bf 0 -g 30 \
+        -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
+        -f whip http://100.99.64.73:8889/$MTX_PATH/whip
+    runOnInitRestart: yes
+  cam3:
+    runOnInit: |-
+      ffmpeg -re -f v4l2 \
+        -video_size 1280x720 -framerate 30 -input_format mjpeg \
+        -i /dev/video6  \
+        -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
+        -vf format=nv12 \
+        -c:v h264_qsv -preset veryfast -look_ahead 0 -async_depth 1 -bf 0 -g 30 \
+        -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
+        -f whip http://100.99.64.73:8889/$MTX_PATH/whip
