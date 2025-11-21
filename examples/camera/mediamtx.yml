@@ -33,10 +33,14 @@ paths:
       ffmpeg -f v4l2 \
         -video_size 1280x720 -framerate 15 -input_format mjpeg \
         -i /dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_5CBE7E5F-video-index0 \
-        -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
+        -f pulse \
+        -use_wallclock_as_timestamps 1 \
+        -i alsa_input.usb-046d_HD_Pro_Webcam_C920_5CBE7E5F-02.analog-stereo \
         -vf "fps=15,format=yuv420p" \
-        -c:v libx264 -preset ultrafast -tune zerolatency -b:v 600k -movflags +faststart \
-        -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
+        -c:v libx264 -preset ultrafast -tune zerolatency -b:v 600k \
+        -g 30 -keyint_min 30 -sc_threshold 0 -bf 0 \
+        -movflags +faststart \
+        -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr on \
         -f whip http://100.75.72.87:8889/$MTX_PATH/whip
     runOnDemandCloseAfter: 10s
   cam2:
