@@ -1,13 +1,20 @@
 # ---------------------------------------------------------
 # MediaMTX configuration for streaming camera(s) with WebRTC
 #
-# NOTE: ffmpeg v8.0 or later is required
+# Prerequisites:
+#   - ffmpeg v8.0 or later installed on the host.
 #
-# How to use:
-#   1. Save this file in /usr/local/etc/
-#   2. Run `mediamtx`
-#   3. Open browser and enter `http://<target-ip-address>:8889/cam1`
+# --- [Host / Server Side] --------------------------------
+# 1. Setup:
+#    Save this file to: /usr/local/etc/mediamtx.yml
 #
+# 2. Execution:
+#    Run the command: `mediamtx`
+#
+# --- [Client / Viewer Side] ------------------------------
+# 1. Viewing:
+#    Open a web browser on any device in the network.
+#    Navigate to: `http://<host-ip-address>:8889/cam1`
 # ---------------------------------------------------------
 
 # Basic settings
@@ -23,33 +30,34 @@ webrtc: yes
 paths:
   cam1:
     runOnInit: |-
-      ffmpeg -re -f v4l2 \
+      ffmpeg -f v4l2 \
         -video_size 1280x720 -framerate 15 -input_format mjpeg \
         -i /dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_5CBE7E5F-video-index0 \
         -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
-        -vf format=yuv420p \
+        -vf "fps=15,format=yuv420p" \
         -c:v libx264 -preset ultrafast -tune zerolatency -b:v 600k -movflags +faststart \
         -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
         -f whip http://100.75.72.87:8889/$MTX_PATH/whip
     runOnInitRestart: yes
   cam2:
     runOnInit: |-
-      ffmpeg -re -f v4l2 \
+      ffmpeg -f v4l2 \
         -video_size 1024x576 -framerate 15 -input_format mjpeg \
         -i /dev/v4l/by-path/platform-xhci-hcd.0-usbv2-0:2:1.0-video-index0 \
         -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
-        -vf format=yuv420p \
+        -vf "fps=15,format=yuv420p" \
         -c:v libx264 -preset ultrafast -tune zerolatency -b:v 600k -movflags +faststart \
         -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
         -f whip http://100.75.72.87:8889/$MTX_PATH/whip
     runOnInitRestart: yes
   cam3:
     runOnInit: |-
-      ffmpeg -re -f v4l2 \
+      ffmpeg -f v4l2 \
         -video_size 1024x576 -framerate 15 -input_format mjpeg \
         -i /dev/v4l/by-path/platform-xhci-hcd.1-usbv2-0:2:1.0-video-index0 \
         -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
-        -vf format=yuv420p \
+        -vf "fps=15,format=yuv420p" \
         -c:v libx264 -preset ultrafast -tune zerolatency -b:v 600k -movflags +faststart \
         -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
         -f whip http://100.75.72.87:8889/$MTX_PATH/whip
+    runOnInitRestart: yes
