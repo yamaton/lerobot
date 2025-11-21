@@ -29,7 +29,7 @@ webrtc: yes
 # https://mediamtx.org/docs/usage/publish#generic-webcams
 paths:
   cam1:
-    runOnInit: |-
+    runOnDemand: |-
       ffmpeg -f v4l2 \
         -video_size 1280x720 -framerate 15 -input_format mjpeg \
         -i /dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_5CBE7E5F-video-index0 \
@@ -38,9 +38,9 @@ paths:
         -c:v libx264 -preset ultrafast -tune zerolatency -b:v 600k -movflags +faststart \
         -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
         -f whip http://100.75.72.87:8889/$MTX_PATH/whip
-    runOnInitRestart: yes
+    runOnDemandCloseAfter: 10s
   cam2:
-    runOnInit: |-
+    runOnDemand: |-
       ffmpeg -f v4l2 \
         -video_size 1024x576 -framerate 15 -input_format mjpeg \
         -i /dev/v4l/by-path/platform-xhci-hcd.0-usbv2-0:2:1.0-video-index0 \
@@ -49,9 +49,9 @@ paths:
         -c:v libx264 -preset ultrafast -tune zerolatency -b:v 600k -movflags +faststart \
         -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
         -f whip http://100.75.72.87:8889/$MTX_PATH/whip
-    runOnInitRestart: yes
+    runOnDemandCloseAfter: 10s
   cam3:
-    runOnInit: |-
+    runOnDemand: |-
       ffmpeg -f v4l2 \
         -video_size 1024x576 -framerate 15 -input_format mjpeg \
         -i /dev/v4l/by-path/platform-xhci-hcd.1-usbv2-0:2:1.0-video-index0 \
@@ -60,4 +60,4 @@ paths:
         -c:v libx264 -preset ultrafast -tune zerolatency -b:v 600k -movflags +faststart \
         -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
         -f whip http://100.75.72.87:8889/$MTX_PATH/whip
-    runOnInitRestart: yes
+    runOnDemandCloseAfter: 10s
