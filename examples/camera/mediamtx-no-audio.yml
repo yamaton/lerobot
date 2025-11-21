@@ -1,0 +1,78 @@
+# ---------------------------------------------------------
+# MediaMTX configuration for streaming camera(s) with WebRTC
+#
+# Prerequisites:
+#   - ffmpeg v8.0 or later installed on the host.
+#
+# --- [Host / Server Side] --------------------------------
+# 1. Setup:
+#    Save this file to: /usr/local/etc/mediamtx.yml
+#
+# 2. Execution:
+#    Run the command: `mediamtx`
+#
+# --- [Client / Viewer Side] ------------------------------
+# 1. Viewing:
+#    Open a web browser on any device in the network.
+#    Navigate to: `http://<host-ip-address>:8889/cam1`
+# ---------------------------------------------------------
+
+# Basic settings
+logLevel: info
+logDestinations: [stdout]
+
+# WebRTC configuration
+webrtc: yes
+# webrtcAddress: :8889
+# webrtcICEServers2: [] # Empty for LAN, add STUN/TURN for internet
+
+# https://mediamtx.org/docs/usage/publish#generic-webcams
+paths:
+  cam1:
+    runOnDemand: |-
+      ffmpeg \
+        -fflags nobuffer -flags low_delay \
+        -f v4l2 \
+        -video_size 1280x720 -framerate 15 -input_format mjpeg \
+        -i /dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_5CBE7E5F-video-index0 \
+        -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
+        -vf "fps=15,format=yuv420p" \
+        -c:v libx264 -preset ultrafast -tune zerolatency \
+        -b:v 1000k -maxrate 1000k -bufsize 500k \
+        -g 15 -keyint_min 15 -sc_threshold 0 -bf 0 \
+        -movflags +faststart \
+        -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
+        -f whip http://100.75.72.87:8889/$MTX_PATH/whip
+    runOnDemandCloseAfter: 10s
+  cam2:
+    runOnDemand: |-
+      ffmpeg \
+        -fflags nobuffer -flags low_delay \
+        -f v4l2 \
+        -video_size 1024x576 -framerate 15 -input_format mjpeg \
+        -i /dev/v4l/by-path/platform-xhci-hcd.0-usbv2-0:2:1.0-video-index0 \
+        -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
+        -vf "fps=15,format=yuv420p" \
+        -c:v libx264 -preset ultrafast -tune zerolatency \
+        -b:v 600k -maxrate 600k -bufsize 300k \
+        -g 15 -keyint_min 15 -sc_threshold 0 -bf 0 \
+        -movflags +faststart \
+        -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
+        -f whip http://100.75.72.87:8889/$MTX_PATH/whip
+    runOnDemandCloseAfter: 10s
+  cam3:
+    runOnDemand: |-
+      ffmpeg \
+        -fflags nobuffer -flags low_delay \
+        -f v4l2 \
+        -video_size 1024x576 -framerate 15 -input_format mjpeg \
+        -i /dev/v4l/by-path/platform-xhci-hcd.1-usbv2-0:2:1.0-video-index0 \
+        -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
+        -vf "fps=15,format=yuv420p" \
+        -c:v libx264 -preset ultrafast -tune zerolatency \
+        -b:v 600k -maxrate 600k -bufsize 300k \
+        -g 15 -keyint_min 15 -sc_threshold 0 -bf 0 \
+        -movflags +faststart \
+        -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
+        -f whip http://100.75.72.87:8889/$MTX_PATH/whip
+    runOnDemandCloseAfter: 10s
