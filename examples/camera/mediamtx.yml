@@ -35,8 +35,7 @@ paths:
         -f v4l2 \
         -video_size 1280x720 -framerate 15 -input_format mjpeg \
         -i /dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_5CBE7E5F-video-index0 \
-        -f pulse \
-        -i alsa_input.usb-046d_HD_Pro_Webcam_C920_5CBE7E5F-02.analog-stereo \
+        -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
         -vf "fps=15,format=yuv420p" \
         -c:v libx264 -preset ultrafast -tune zerolatency \
         -b:v 1000k -maxrate 1000k -bufsize 250k \
