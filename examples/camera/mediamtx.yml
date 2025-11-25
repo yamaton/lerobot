@@ -46,7 +46,7 @@ paths:
         -movflags +faststart \
         -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
         -f whip http://100.75.72.87:8889/$MTX_PATH/whip
-    runOnDemandCloseAfter: 10s
+    runOnDemandCloseAfter: 120s
   cam2:
     runOnDemand: |-
       ffmpeg \
@@ -64,7 +64,7 @@ paths:
         -movflags +faststart \
         -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
         -f whip http://100.75.72.87:8889/$MTX_PATH/whip
-    runOnDemandCloseAfter: 10s
+    runOnDemandCloseAfter: 120s
   cam3:
     runOnDemand: |-
       ffmpeg \
@@ -82,4 +82,4 @@ paths:
         -movflags +faststart \
         -c:a libopus -ar 48000 -ac 2 -b:a 16k -vbr off \
         -f whip http://100.75.72.87:8889/$MTX_PATH/whip
-    runOnDemandCloseAfter: 10s
+    runOnDemandCloseAfter: 120s
